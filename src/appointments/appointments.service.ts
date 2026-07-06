@@ -81,7 +81,7 @@ export class AppointmentsService {
   async checkInAppointment(appointmentId: string, hospitalId: string) {
     const appt = await this.prisma.appointment.findFirst({
       where: { id: appointmentId },
-      include: { patient: true, doctor: true },
+      include: { patient: true, doctor: true, queueEntry: true },
     });
     if (!appt) throw new NotFoundException('Appointment not found');
     if (appt.queueEntry) throw new BadRequestException('Patient already checked in');

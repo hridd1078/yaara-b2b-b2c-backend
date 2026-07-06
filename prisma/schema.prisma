@@ -1,0 +1,271 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  receptionist
+  doctor
+}
+
+enum QueueStatus {
+  waiting
+  in_consultation
+  completed
+  no_show
+}
+
+enum QueuePriority {
+  normal
+  high
+  emergency
+}
+
+enum BillStatus {
+  pending
+  paid
+  overdue
+}
+
+enum AppointmentStatus {
+  confirmed
+  cancelled
+  completed
+  no_show
+}
+
+enum BookingType {
+  walk_in
+  app_booked
+}
+
+// ─── HOSPITAL ─────────────────────────────────────────────────────────────────
+
+model Hospital {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  city      String?
+  phone     String?
+  email     String?
+  logoUrl   String?  @map("logo_url")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users        User[]
+  appointments Appointment[]
+  bills        Bill[]
+  queueEntries QueueEntry[]
+
+  @@map("hospitals")
+}
+
+// ─── STAFF (B2B users) ────────────────────────────────────────────────────────
+
+model User {
+  id             String    @id @default(uuid())
+  name           String
+  email          String    @unique
+  password       String
+  role           Role
+  specialization String?
+  hospitalId     String?   @map("hospital_id")
+  hospital       Hospital? @relation(fields: [hospitalId], references: [id])
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  queueEntries QueueEntry[] @relation("DoctorQueueEntries")
+  bills        Bill[]       @relation("DoctorBills")
+  visits       Visit[]      @relation("DoctorVisits")
+  slots        DoctorSlot[]
+  appointments Appointment[] @relation("DoctorAppointments")
+
+  @@map("users")
+}
+
+// ─── DOCTOR SLOTS ─────────────────────────────────────────────────────────────
+
+model DoctorSlot {
+  id        String   @id @default(uuid())
+  doctorId  String   @map("doctor_id")
+  doctor    User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  label     String
+  startTime String   @map("start_time")
+  endTime   String   @map("end_time")
+  days      String[]
+  maxTokens Int      @default(30) @map("max_tokens")
+
+  queueEntries QueueEntry[]
+  appointments Appointment[]
+
+  @@index([doctorId])
+  @@map("doctor_slots")
+}
+
+// ─── PATIENT (shared — both B2B walk-ins and B2C app users) ───────────────────
+
+model Patient {
+  id             String   @id @default(uuid())
+  name           String
+  email          String?  @unique
+  contact        String
+  password       String?  // hashed — set when patient registers via app
+  dateOfBirth    String?  @map("date_of_birth")
+  address        String?
+  bloodGroup     String?  @map("blood_group")
+  emergencyContact String? @map("emergency_contact")
+  medicalHistory String?  @map("medical_history")
+  isAppUser      Boolean  @default(false) @map("is_app_user")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  queueEntries QueueEntry[]
+  appointments Appointment[]
+  bills        Bill[]
+  visits       Visit[]
+  symptomLogs  SymptomLog[]
+
+  @@index([contact])
+  @@map("patients")
+}
+
+// ─── APPOINTMENTS (B2C app bookings — future dated) ───────────────────────────
+
+model Appointment {
+  id          String            @id @default(uuid())
+  patientId   String            @map("patient_id")
+  patient     Patient           @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctorId    String            @map("doctor_id")
+  doctor      User              @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  slotId      String            @map("slot_id")
+  slot        DoctorSlot        @relation(fields: [slotId], references: [id])
+  hospitalId  String            @map("hospital_id")
+  hospital    Hospital          @relation(fields: [hospitalId], references: [id])
+  date        DateTime          @db.Date
+  visitReason String?           @map("visit_reason")
+  status      AppointmentStatus @default(confirmed)
+  bookingFee  Decimal?          @map("booking_fee") @db.Decimal(10, 2)
+  queueEntry  QueueEntry?       // created on the day when patient arrives/is checked in
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([date])
+  @@map("appointments")
+}
+
+// ─── QUEUE ENTRY ──────────────────────────────────────────────────────────────
+
+model QueueEntry {
+  id             String        @id @default(uuid())
+  patientId      String        @map("patient_id")
+  patient        Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  patientName    String        @map("patient_name")
+  patientContact String        @map("patient_contact")
+  doctorId       String?       @map("doctor_id")
+  doctor         User?         @relation("DoctorQueueEntries", fields: [doctorId], references: [id])
+  slotId         String?       @map("slot_id")
+  slot           DoctorSlot?   @relation(fields: [slotId], references: [id])
+  hospitalId     String?       @map("hospital_id")
+  hospital       Hospital?     @relation(fields: [hospitalId], references: [id])
+  appointmentId  String?       @unique @map("appointment_id")
+  appointment    Appointment?  @relation(fields: [appointmentId], references: [id])
+  date           DateTime      @default(now()) @map("date") @db.Date
+  tokenNumber    Int           @map("token_number")
+  status         QueueStatus   @default(waiting)
+  priority       QueuePriority @default(normal)
+  position       Int
+  bookingType    BookingType   @default(walk_in) @map("booking_type")
+  visitReason    String?       @map("visit_reason")
+  checkedInAt    DateTime      @default(now()) @map("checked_in_at")
+  calledAt       DateTime?     @map("called_at")
+  completedAt    DateTime?     @map("completed_at")
+  estimatedWaitMins Int        @default(15) @map("estimated_wait_mins")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  @@unique([doctorId, slotId, date, tokenNumber])
+  @@index([status])
+  @@index([doctorId])
+  @@index([date])
+  @@map("queue")
+}
+
+// ─── VISIT HISTORY ────────────────────────────────────────────────────────────
+
+model Visit {
+  id                  String    @id @default(uuid())
+  patientId           String    @map("patient_id")
+  patient             Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctorId            String    @map("doctor_id")
+  doctor              User      @relation("DoctorVisits", fields: [doctorId], references: [id])
+  notes               String?
+  diagnosis           String?
+  startedAt           DateTime? @map("started_at")
+  completedAt         DateTime? @map("completed_at")
+  consultationSeconds Int?      @map("consultation_seconds")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@map("visits")
+}
+
+// ─── SYMPTOM LOGS (B2C — visible to doctor during consultation) ───────────────
+
+model SymptomLog {
+  id          String   @id @default(uuid())
+  patientId   String   @map("patient_id")
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  symptoms    String[] // list of symptom tags
+  severity    Int      // 1–10
+  notes       String?
+  recordedAt  DateTime @default(now()) @map("recorded_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([patientId])
+  @@map("symptom_logs")
+}
+
+// ─── BILL ─────────────────────────────────────────────────────────────────────
+
+model Bill {
+  id            String     @id @default(uuid())
+  patientId     String     @map("patient_id")
+  patient       Patient    @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  patientName   String     @map("patient_name")
+  doctorId      String?    @map("doctor_id")
+  doctor        User?      @relation("DoctorBills", fields: [doctorId], references: [id])
+  hospitalId    String?    @map("hospital_id")
+  hospital      Hospital?  @relation(fields: [hospitalId], references: [id])
+  items         Json
+  totalAmount   Decimal    @map("total_amount") @db.Decimal(10, 2)
+  yaraFee       Decimal    @default(15) @map("yara_fee") @db.Decimal(10, 2)
+  paymentMethod String?    @map("payment_method")
+  status        BillStatus @default(pending)
+  paidAt        DateTime?  @map("paid_at")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([patientId])
+  @@map("bills")
+}
+
+// ─── ETA PROFILE ──────────────────────────────────────────────────────────────
+
+model DoctorEtaProfile {
+  doctorId            String   @id @map("doctor_id")
+  avgConsultationSecs Int      @default(900) @map("avg_consultation_secs")
+  sampleCount         Int      @default(0) @map("sample_count")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("doctor_eta_profiles")
+}
